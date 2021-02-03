@@ -9,6 +9,9 @@ License:        LGPLv2+ and MIT and GPLv2+
 Summary:        Kdump optimized version of systemd
 Source0:        https://github.com/systemd/systemd-stable/archive/systemd-stable-%{version}.tar.gz
 
+# https://github.com/systemd/systemd/pull/18124.patch
+Patch1:         0001-initrd-add-an-env-variable-to-accept-non-ramfs-rootfs.patch
+
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  coreutils
@@ -37,7 +40,10 @@ Requires:       kexec-tools
 This is a re-packaged mininized systemd for kdump use.
 
 %prep -n systemd-stable-%{version}
-%autosetup -n systemd-stable-%{version}
+%setup -n systemd-stable-%{version}
+
+# Apply patches, autosetup won't work with "-n" here
+%patch1 -p1
 
 %build -n systemd-stable-%{version}
 %define ntpvendor %(source /etc/os-release; echo ${ID})

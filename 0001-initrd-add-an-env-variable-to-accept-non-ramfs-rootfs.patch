@@ -1,0 +1,205 @@
+From 96cceb35e7985f5ee6c9b17e129a76259273cdde Mon Sep 17 00:00:00 2001
+From: Kairui Song <kasong@redhat.com>
+Date: Fri, 8 Jan 2021 14:52:26 +0800
+Subject: [PATCH 1/4] util: rework in_initrd() to make use of
+ path_is_temporary_fs()
+
+---
+ src/basic/util.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/basic/util.c b/src/basic/util.c
+index 7c708eb3be7..907a8d1b2aa 100644
+--- a/src/basic/util.c
++++ b/src/basic/util.c
+@@ -52,7 +52,6 @@ int prot_from_flags(int flags) {
+ }
+ 
+ bool in_initrd(void) {
+-        struct statfs s;
+         int r;
+ 
+         if (saved_in_initrd >= 0)
+@@ -76,8 +75,7 @@ bool in_initrd(void) {
+                 saved_in_initrd = r > 0;
+         else
+                 saved_in_initrd = access("/etc/initrd-release", F_OK) >= 0 &&
+-                                  statfs("/", &s) >= 0 &&
+-                                  is_temporary_fs(&s);
++                                  path_is_temporary_fs("/") > 0;
+ 
+         return saved_in_initrd;
+ }
+
+From 1f22621ba33f8089d2ae5fbcaf8b3970dd68aaf0 Mon Sep 17 00:00:00 2001
+From: Kairui Song <kasong@redhat.com>
+Date: Wed, 13 Jan 2021 00:04:53 +0800
+Subject: [PATCH 2/4] initrd: extend SYSTEMD_IN_INITRD to accept non-ramfs
+ rootfs
+
+Sometimes, non-ramfs initrd root are useful. Eg, for kdump, because
+initramfs is memory consuming, so mount a compressed image in earlier
+initrd, chroot into it then let systemd do the rest of job is a good
+solution.
+
+But systemd doesn't recognize the initrd environment if rootfs is not a
+temporary fs. This is a reasonable check, because switch-root in initrd
+will wipe the whole rootfs, will be a disaster if there are any
+misdetect.
+
+So extend SYSTEMD_IN_INITRD environment variable, now it accepts boolean
+value and two extra keyword, "auto" and "lenient". "auto" is same as
+before, and it's the default value. "lenient" will let systemd bypass
+the rootfs check.
+---
+ docs/ENVIRONMENT.md | 10 +++++++---
+ src/basic/util.c    | 32 +++++++++++++++++++++++---------
+ 2 files changed, 30 insertions(+), 12 deletions(-)
+
+diff --git a/docs/ENVIRONMENT.md b/docs/ENVIRONMENT.md
+index 74a71bba937..8eb2b9b9e2d 100644
+--- a/docs/ENVIRONMENT.md
++++ b/docs/ENVIRONMENT.md
+@@ -52,9 +52,13 @@ All tools:
+ * `$SYSTEMD_EFI_OPTIONS` — if set, used instead of the string in the
+   SystemdOptions EFI variable. Analogous to `$SYSTEMD_PROC_CMDLINE`.
+ 
+-* `$SYSTEMD_IN_INITRD` — takes a boolean. If set, overrides initrd detection.
+-  This is useful for debugging and testing initrd-only programs in the main
+-  system.
++* `$SYSTEMD_IN_INITRD=[auto|lenient|0|1]` — if set, specifies initrd detection
++  method. Defaults to `auto`. Behavior is defined as follows:
++  `auto`: Checks if `/etc/initrd-release` exists, and a temporary fs is mounted
++          on `/`. If both conditions meet, then it's in initrd.
++  `lenient`: Similiar to `auto`, but the rootfs check is skipped.
++  `0|1`: Simply overrides initrd detection. This is useful for debugging and
++         testing initrd-only programs in the main system.
+ 
+ * `$SYSTEMD_BUS_TIMEOUT=SECS` — specifies the maximum time to wait for method call
+   completion. If no time unit is specified, assumes seconds. The usual other units
+diff --git a/src/basic/util.c b/src/basic/util.c
+index 907a8d1b2aa..7de53416372 100644
+--- a/src/basic/util.c
++++ b/src/basic/util.c
+@@ -53,11 +53,13 @@ int prot_from_flags(int flags) {
+ 
+ bool in_initrd(void) {
+         int r;
++        const char *e;
++        bool lenient = false;
+ 
+         if (saved_in_initrd >= 0)
+                 return saved_in_initrd;
+ 
+-        /* We make two checks here:
++        /* We have two checks here:
+          *
+          * 1. the flag file /etc/initrd-release must exist
+          * 2. the root file system must be a memory file system
+@@ -65,17 +67,29 @@ bool in_initrd(void) {
+          * The second check is extra paranoia, since misdetecting an
+          * initrd can have bad consequences due the initrd
+          * emptying when transititioning to the main systemd.
++         *
++         * If env var $SYSTEMD_IN_INITRD is not set or set to "auto",
++         * both checks are used. If it's set to "lenient", only check
++         * 1 is used. If set to a booleen value, then the boolean
++         * value is returned.
+          */
+ 
+-        r = getenv_bool_secure("SYSTEMD_IN_INITRD");
+-        if (r < 0 && r != -ENXIO)
+-                log_debug_errno(r, "Failed to parse $SYSTEMD_IN_INITRD, ignoring: %m");
++        e = secure_getenv("SYSTEMD_IN_INITRD");
++        if (e) {
++                if (streq(e, "lenient"))
++                        lenient = true;
++                else if (!streq(e, "auto")) {
++                        r = parse_boolean(e);
++                        if (r >= 0) {
++                                saved_in_initrd = r > 0;
++                                return saved_in_initrd;
++                        }
++                        log_debug_errno(r, "Failed to parse $SYSTEMD_IN_INITRD, ignoring: %m");
++                }
++        }
+ 
+-        if (r >= 0)
+-                saved_in_initrd = r > 0;
+-        else
+-                saved_in_initrd = access("/etc/initrd-release", F_OK) >= 0 &&
+-                                  path_is_temporary_fs("/") > 0;
++        saved_in_initrd = (lenient || path_is_temporary_fs("/") > 0) &&
++                          access("/etc/initrd-release", F_OK) >= 0;
+ 
+         return saved_in_initrd;
+ }
+
+From 3b9b91696844a27419b98bedd3cd09d13f745a23 Mon Sep 17 00:00:00 2001
+From: Kairui Song <kasong@redhat.com>
+Date: Thu, 14 Jan 2021 00:39:10 +0800
+Subject: [PATCH 3/4] initrd: do a debug log if failed to detect rootfs type
+
+---
+ src/basic/util.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/basic/util.c b/src/basic/util.c
+index 7de53416372..2e6820a63b2 100644
+--- a/src/basic/util.c
++++ b/src/basic/util.c
+@@ -88,8 +88,16 @@ bool in_initrd(void) {
+                 }
+         }
+ 
+-        saved_in_initrd = (lenient || path_is_temporary_fs("/") > 0) &&
+-                          access("/etc/initrd-release", F_OK) >= 0;
++        if (!lenient) {
++                r = path_is_temporary_fs("/");
++                if (r < 0)
++                        log_debug_errno(r, "Couldn't determine if / is a temporary file system: %m");
++
++                saved_in_initrd = r > 0;
++        }
++
++        if (saved_in_initrd != 0)
++                saved_in_initrd = access("/etc/initrd-release", F_OK) >= 0;
+ 
+         return saved_in_initrd;
+ }
+
+From b562b9c68c5249be49f140210c1295f0e6182358 Mon Sep 17 00:00:00 2001
+From: Kairui Song <kasong@redhat.com>
+Date: Thu, 14 Jan 2021 01:25:20 +0800
+Subject: [PATCH 4/4] initrd: do a debug log if /etc/initrd-release doesn't
+ take effect
+
+Signed-off-by: Kairui Song <kasong@redhat.com>
+---
+ src/basic/util.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/basic/util.c b/src/basic/util.c
+index 2e6820a63b2..d24d52190cd 100644
+--- a/src/basic/util.c
++++ b/src/basic/util.c
+@@ -96,8 +96,17 @@ bool in_initrd(void) {
+                 saved_in_initrd = r > 0;
+         }
+ 
+-        if (saved_in_initrd != 0)
+-                saved_in_initrd = access("/etc/initrd-release", F_OK) >= 0;
++        r = access("/etc/initrd-release", F_OK);
++        if (r >= 0) {
++                if (saved_in_initrd == 0)
++                        log_debug("/etc/initrd-release exists, but it's not an initrd.");
++                else
++                        saved_in_initrd = 1;
++        } else {
++                if (errno != ENOENT)
++                        log_debug_errno(errno, "Failed to test if /etc/initrd-release exists: %m");
++                saved_in_initrd = 0;
++        }
+ 
+         return saved_in_initrd;
+ }
