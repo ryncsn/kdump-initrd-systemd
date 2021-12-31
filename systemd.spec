@@ -3,7 +3,7 @@
 
 Name:           kdump-initrd-systemd
 Url:            https://www.freedesktop.org/wiki/Software/systemd
-Version:        247.2
+Version:        247.10
 Release:        1%{?dist}
 License:        LGPLv2+ and MIT and GPLv2+
 Summary:        Kdump optimized version of systemd
@@ -72,9 +72,8 @@ CONFIGURE_OPTS=(
         # https://bugzilla.redhat.com/show_bug.cgi?id=1867830
         -Ddefault-mdns=no
         -Ddefault-llmnr=resolve
-        -Dkmod=true
         -Dblkid=true
-        -Dlogind=true
+        -Dkmod=true
 )
 
 CONFIGURE_OPTS_KDUMP=(
@@ -86,6 +85,7 @@ CONFIGURE_OPTS_KDUMP=(
         -Dbacklight=false
         -Dbinfmt=false
         -Dbzip2=false
+        -Dlogind=false
         -Defi=false
         -Delfutils=false
         -Dfdisk=false
@@ -163,10 +163,11 @@ CONFIGURE_OPTS_KDUMP=(
         -Dlibcryptsetup=false
         # Avoid eh_frame overhead
         -Dc_args="-fno-asynchronous-unwind-tables"
+        -Dversion-tag=v%{version}-%{release}-kdump
         # Smaller build
         -Db_lto=true
-        # -Dstrip=true
-        -Dversion-tag=v%{version}-%{release}-kdump
+        --optimization=s
+        --auto-features=disabled
 )
 
 %meson "${CONFIGURE_OPTS[@]}" "${CONFIGURE_OPTS_KDUMP[@]}"
